@@ -23,6 +23,9 @@ describe("xAI Images", () => {
       expect(response.images).toHaveLength(2)
       expect(response.image?.mediaType).toBe("image/jpeg")
       expect(response.image?.data).toEqual(Uint8Array.from([1, 2, 3]))
+      expect(response.images[1]?.mediaType).toBe("application/octet-stream")
+      expect(response.images[1]?.data).toBe("https://api.xai.test/image.jpg")
+      expect(response.usage?.providerMetadata).toEqual({ xai: { num_images: 2 } })
       expect(response.providerMetadata).toEqual({ xai: { usage: { num_images: 2 } } })
     }).pipe(
       Effect.provide(
@@ -44,8 +47,8 @@ describe("xAI Images", () => {
                 return input.respond(
                   JSON.stringify({
                     data: [
-                      { b64_json: "AQID", mime_type: "image/jpeg" },
-                      { b64_json: "BAUG", mime_type: "image/jpeg" },
+                      { b64_json: "AQID", url: null, mime_type: "image/jpeg" },
+                      { b64_json: null, url: "https://api.xai.test/image.jpg", mime_type: null },
                     ],
                     usage: { num_images: 2 },
                   }),

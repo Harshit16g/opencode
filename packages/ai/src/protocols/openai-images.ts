@@ -10,7 +10,7 @@ import {
 } from "../image"
 import { Auth, type Definition as AuthDefinition } from "../route/auth"
 import { InvalidProviderOutputReason, LLMError, Usage, mergeHttpOptions, mergeJsonRecords } from "../schema"
-import { ProviderShared } from "./shared"
+import { ProviderShared, optionalNull } from "./shared"
 import { OpenAIImage } from "./utils/openai-image"
 
 export const DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -50,10 +50,10 @@ export type OpenAIImageBody = Schema.Schema.Type<typeof OpenAIImageBody>
 const OpenAIImageResponse = Schema.Struct({
   data: Schema.Array(
     Schema.Struct({
-      b64_json: Schema.optional(Schema.String),
-      url: Schema.optional(Schema.String),
+      b64_json: optionalNull(Schema.String),
+      url: optionalNull(Schema.String),
       revised_prompt: Schema.optional(Schema.String),
-      mime_type: Schema.optional(Schema.String),
+      mime_type: optionalNull(Schema.String),
     }),
   ),
   output_format: Schema.optional(Schema.String),
@@ -198,7 +198,7 @@ export const model = (input: ModelInput) => {
       )
       const format = decoded.output_format ?? openAIOptions(request).outputFormat ?? "png"
       const images = yield* Effect.forEach(decoded.data, (item, index) => {
-        const mediaType = item.mime_type ?? `image/${format}`
+        const mediaType = item.mime_type ?? (protocol === "openai" ? `image/${format}` : "application/octet-stream")
         if (item.b64_json)
           return Effect.fromResult(Encoding.decodeBase64(item.b64_json)).pipe(
             Effect.mapError(() =>
@@ -230,17 +230,19 @@ export const model = (input: ModelInput) => {
         )
       })
       if (images.length === 0) return yield* invalidOutput(adapter, `${protocol} Images returned no images`)
-      const usage = protocol === "openai" && Schema.is(OpenAIImageUsage)(decoded.usage) ? decoded.usage : undefined
+      const openAIUsage =
+        protocol === "openai" && Schema.is(OpenAIImageUsage)(decoded.usage) ? decoded.usage : undefined
+      const xaiUsage = protocol === "xai" && ProviderShared.isRecord(decoded.usage) ? decoded.usage : undefined
       return new ImageResponse({
         images,
         usage:
-          usage === undefined
+          openAIUsage === undefined && xaiUsage === undefined
             ? undefined
             : new Usage({
-                inputTokens: usage.input_tokens,
-                outputTokens: usage.output_tokens,
-                totalTokens: usage.total_tokens,
-                providerMetadata: { [protocol]: usage },
+                inputTokens: openAIUsage?.input_tokens,
+                outputTokens: openAIUsage?.output_tokens,
+                totalTokens: openAIUsage?.total_tokens,
+                providerMetadata: { [protocol]: openAIUsage ?? xaiUsage ?? {} },
               }),
         providerMetadata: {
           [protocol]: {

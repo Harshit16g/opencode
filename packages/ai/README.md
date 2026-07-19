@@ -66,7 +66,7 @@ Conversational image generation remains part of the LLM interaction. OpenAI Resp
 const program = Effect.gen(function* () {
   const response = yield* LLM.generate(
     LLM.request({
-      model: OpenAI.configure({ apiKey }).responses("gpt-5"),
+      model: OpenAI.configure({ apiKey: process.env.OPENAI_API_KEY }).responses("gpt-5"),
       prompt: "Design a solarpunk rooftop garden, then show me.",
       tools: [OpenAI.imageGeneration({ quality: "high" })],
     }),

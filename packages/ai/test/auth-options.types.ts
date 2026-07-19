@@ -1,4 +1,4 @@
-import { Config } from "effect"
+import { Config, Effect } from "effect"
 import type { Auth } from "../src/route/auth"
 import type { ModelFactory } from "../src/route/auth-options"
 import { Auth as RuntimeAuth } from "../src/route/auth"
@@ -32,6 +32,13 @@ declare const auth: Auth
 declare const optionalAuthModel: ModelFactory<BaseOptions, "optional", Model>
 declare const requiredAuthModel: ModelFactory<BaseOptions, "required", Model>
 const configApiKey = Config.redacted("OPENAI_API_KEY")
+
+RuntimeAuth.custom((input) => {
+  input.request.model
+  input.request.metadata
+  input.request.providerOptions
+  return Effect.succeed(input.headers)
+})
 
 OpenAIChat.route.model({ id: "gpt-4.1-mini" })
 

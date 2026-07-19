@@ -90,4 +90,27 @@ describe("xAI Images", () => {
       ),
     ),
   )
+
+  it.effect("rejects LLM-only custom auth for image requests", () =>
+    Image.generate({
+      model: XAI.configure({
+        baseURL: "https://api.xai.test/v1",
+        auth: Auth.custom(() => Effect.die("LLM custom auth should not receive an image request")),
+      }).image("grok-imagine-image"),
+      prompt: "A robot tending a rooftop garden",
+    }).pipe(
+      Effect.flip,
+      Effect.tap((error) =>
+        Effect.sync(() => {
+          expect(error.reason._tag).toBe("InvalidRequest")
+          expect(error.message).toContain("Auth.customRequest")
+        }),
+      ),
+      Effect.provide(
+        ImageClient.layer.pipe(
+          Layer.provide(dynamicResponse(() => Effect.die("invalid auth should not reach the provider"))),
+        ),
+      ),
+    ),
+  )
 })

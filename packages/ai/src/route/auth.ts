@@ -1,6 +1,6 @@
 import { Config, Effect, Redacted } from "effect"
 import { Headers } from "effect/unstable/http"
-import { AuthenticationReason, InvalidRequestReason, LLMError, type HttpOptions, type LLMRequest } from "../schema"
+import { AuthenticationReason, InvalidRequestReason, LLMError, LLMRequest, type HttpOptions } from "../schema"
 
 export class MissingCredentialError extends Error {
   readonly _tag = "MissingCredentialError"
@@ -108,7 +108,18 @@ export const customRequest = (apply: (input: RequestAuthInput) => Effect.Effect<
   auth(apply)
 
 export const custom = (apply: (input: AuthInput) => Effect.Effect<Headers.Headers, LLMError>) =>
-  customRequest((input) => apply(input as AuthInput))
+  auth((input) => {
+    if (input.request instanceof LLMRequest) return apply({ ...input, request: input.request })
+    return Effect.fail(
+      new LLMError({
+        module: "Auth",
+        method: "custom",
+        reason: new InvalidRequestReason({
+          message: "Auth.custom only supports LLM requests; use Auth.customRequest for other request types",
+        }),
+      }),
+    )
+  })
 
 export const passthrough = none
 

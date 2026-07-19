@@ -47,7 +47,7 @@ const OpenAIImageBody = Schema.Struct({
 })
 export type OpenAIImageBody = Schema.Schema.Type<typeof OpenAIImageBody>
 
-const OpenAIImageResponse = Schema.Struct({
+const ImageResponseFields = {
   data: Schema.Array(
     Schema.Struct({
       b64_json: optionalNull(Schema.String),
@@ -57,8 +57,7 @@ const OpenAIImageResponse = Schema.Struct({
     }),
   ),
   output_format: Schema.optional(Schema.String),
-  usage: Schema.optional(Schema.Unknown),
-})
+}
 
 const OpenAIImageUsage = Schema.Struct({
   input_tokens: Schema.optional(Schema.Number),
@@ -66,6 +65,16 @@ const OpenAIImageUsage = Schema.Struct({
   total_tokens: Schema.optional(Schema.Number),
   input_tokens_details: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   output_tokens_details: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+})
+
+const OpenAIImageResponse = Schema.Struct({
+  ...ImageResponseFields,
+  usage: Schema.optional(OpenAIImageUsage),
+})
+
+const XAIImageResponse = Schema.Struct({
+  ...ImageResponseFields,
+  usage: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 })
 
 export interface ModelInput {
@@ -193,7 +202,8 @@ export const model = (input: ModelInput) => {
       const payload = yield* response.json.pipe(
         Effect.mapError(() => invalidOutput(adapter, `Failed to read the ${protocol} Images response`)),
       )
-      const decoded = yield* Schema.decodeUnknownEffect(OpenAIImageResponse)(payload).pipe(
+      const responseSchema = protocol === "openai" ? OpenAIImageResponse : XAIImageResponse
+      const decoded = yield* Schema.decodeUnknownEffect(responseSchema)(payload).pipe(
         Effect.mapError(() => invalidOutput(adapter, `${protocol} Images returned an invalid response`)),
       )
       const format = decoded.output_format ?? openAIOptions(request).outputFormat ?? "png"

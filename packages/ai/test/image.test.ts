@@ -92,4 +92,31 @@ describe("Image", () => {
       ),
     ),
   )
+
+  it.effect("rejects malformed OpenAI image usage", () =>
+    Image.generate({
+      model: OpenAI.configure({ apiKey: "test", baseURL: "https://api.openai.test/v1" }).image("gpt-image-2"),
+      prompt: "A robot tending a rooftop garden",
+    }).pipe(
+      Effect.flip,
+      Effect.tap((error) =>
+        Effect.sync(() => {
+          expect(error.reason._tag).toBe("InvalidProviderOutput")
+        }),
+      ),
+      Effect.provide(
+        ImageClient.layer.pipe(
+          Layer.provide(
+            dynamicResponse((input) =>
+              Effect.succeed(
+                input.respond(JSON.stringify({ data: [{ b64_json: "AQID" }], usage: "invalid" }), {
+                  headers: { "content-type": "application/json" },
+                }),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  )
 })

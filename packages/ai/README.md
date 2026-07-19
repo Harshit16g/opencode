@@ -5,7 +5,7 @@ Schema-first AI primitives for opencode. Provider quirks live in adapters, not i
 ```ts
 import { Effect } from "effect"
 import { LLM, LLMClient } from "@opencode-ai/ai"
-import { OpenAI } from "@opencode-ai/ai/providers"
+import { OpenAI, XAI } from "@opencode-ai/ai/providers"
 
 const model = OpenAI.configure({ apiKey: process.env.OPENAI_API_KEY }).responses("gpt-4o-mini")
 
@@ -42,6 +42,21 @@ const program = Effect.gen(function* () {
   })
 
   return response.images // GeneratedImage[] with owned bytes or a provider URL
+})
+```
+
+xAI uses the same image domain with Grok Imagine-specific controls:
+
+```ts
+const program = Effect.gen(function* () {
+  return yield* Image.generate({
+    model: XAI.configure({
+      apiKey: process.env.XAI_API_KEY,
+      image: { providerOptions: { resolution: "1k", responseFormat: "b64_json" } },
+    }).image("grok-imagine-image"),
+    prompt: "A futuristic city skyline at sunset",
+    aspectRatio: "16:9",
+  })
 })
 ```
 

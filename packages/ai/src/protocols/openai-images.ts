@@ -36,15 +36,23 @@ const OpenAIImageBody = Schema.Struct({
   model: Schema.String,
   prompt: Schema.String,
   n: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
-  size: Schema.optional(OpenAIImage.Size),
-  quality: Schema.optional(Schema.Literals(["auto", "low", "medium", "high", "hd", "standard"])),
+  size: Schema.optional(Schema.String),
+  quality: Schema.optional(Schema.Literals(["auto", "low", "medium", "high"])),
   background: Schema.optional(Schema.Literals(["auto", "opaque", "transparent"])),
   moderation: Schema.optional(Schema.Literals(["auto", "low"])),
   output_format: Schema.optional(Schema.Literals(["png", "jpeg", "webp"])),
   output_compression: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 }))),
-  user_id: Schema.optional(Schema.String),
 })
 export type OpenAIImageBody = Schema.Schema.Type<typeof OpenAIImageBody>
+
+const ZAIImageBody = Schema.Struct({
+  model: Schema.String,
+  prompt: Schema.String,
+  size: Schema.optional(Schema.String),
+  quality: Schema.optional(Schema.Literals(["hd", "standard"])),
+  user_id: Schema.optional(Schema.String.check(Schema.isMinLength(6), Schema.isMaxLength(128))),
+})
+export type ZAIImageBody = Schema.Schema.Type<typeof ZAIImageBody>
 
 const OpenAIImageResponse = Schema.Struct({
   data: Schema.Array(
@@ -64,14 +72,18 @@ const OpenAIImageResponse = Schema.Struct({
       output_tokens_details: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
     }),
   ),
+})
+
+const ZAIImageResponse = Schema.Struct({
   created: Schema.optional(Schema.Int),
   id: Schema.optional(Schema.String),
   request_id: Schema.optional(Schema.String),
+  data: Schema.Array(Schema.Struct({ url: Schema.String })),
   content_filter: Schema.optional(
     Schema.Array(
       Schema.Struct({
-        role: Schema.optional(Schema.String),
-        level: Schema.optional(Schema.Number),
+        role: Schema.optional(Schema.Literals(["assistant", "user", "history"])),
+        level: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 }))),
       }),
     ),
   ),
@@ -96,17 +108,7 @@ const zaiOptions = (request: ImageRequest): ZAIImageOptions => ({
   ...request.providerOptions?.zai,
 })
 
-const body = (request: ImageRequest, protocol: ImageProtocol): OpenAIImageBody => {
-  if (protocol === "zai") {
-    const options = zaiOptions(request)
-    return {
-      model: request.model.id,
-      prompt: request.prompt,
-      size: request.size === undefined ? undefined : `${request.size.width}x${request.size.height}`,
-      quality: options.quality,
-      user_id: options.userID,
-    }
-  }
+const openaiBody = (request: ImageRequest): OpenAIImageBody => {
   const options = providerOptions(request)
   return {
     model: request.model.id,
@@ -118,6 +120,17 @@ const body = (request: ImageRequest, protocol: ImageProtocol): OpenAIImageBody =
     moderation: options.moderation,
     output_format: options.outputFormat,
     output_compression: options.outputCompression,
+  }
+}
+
+const zaiBody = (request: ImageRequest): ZAIImageBody => {
+  const options = zaiOptions(request)
+  return {
+    model: request.model.id,
+    prompt: request.prompt,
+    size: request.size === undefined ? undefined : `${request.size.width}x${request.size.height}`,
+    quality: options.quality,
+    user_id: options.userID,
   }
 }
 
@@ -135,7 +148,7 @@ const applyQuery = (url: string, query: Record<string, string> | undefined) => {
   return next.toString()
 }
 
-const PROTOCOL_BODY_FIELDS = new Set([
+const OPENAI_BODY_FIELDS = new Set([
   "model",
   "prompt",
   "n",
@@ -145,15 +158,16 @@ const PROTOCOL_BODY_FIELDS = new Set([
   "moderation",
   "output_format",
   "output_compression",
-  "user_id",
 ])
+const ZAI_BODY_FIELDS = new Set(["model", "prompt", "size", "quality", "user_id"])
 
 const bodyWithOverlay = Effect.fn("OpenAIImages.bodyWithOverlay")(function* (
-  imageBody: OpenAIImageBody,
+  imageBody: Record<string, unknown>,
   overlay: Record<string, unknown> | undefined,
+  ownedFields: ReadonlySet<string>,
 ) {
   if (!overlay) return imageBody
-  const reserved = Object.keys(overlay).filter((key) => PROTOCOL_BODY_FIELDS.has(key))
+  const reserved = Object.keys(overlay).filter((key) => ownedFields.has(key))
   if (reserved.length > 0)
     return yield* ProviderShared.invalidRequest(
       `http.body cannot overlay protocol-owned field(s): ${reserved.join(", ")}`,
@@ -175,11 +189,16 @@ export const model = (input: ModelInput) => {
       if (protocol === "zai" && request.count !== undefined)
         return yield* ProviderShared.invalidRequest("Z.ai Images does not support the common count option")
 
-      const requestBody = yield* ProviderShared.validateWith(Schema.decodeUnknownEffect(OpenAIImageBody))(
-        body(request, protocol),
-      )
+      const requestBody =
+        protocol === "openai"
+          ? yield* ProviderShared.validateWith(Schema.decodeUnknownEffect(OpenAIImageBody))(openaiBody(request))
+          : yield* ProviderShared.validateWith(Schema.decodeUnknownEffect(ZAIImageBody))(zaiBody(request))
       const http = mergeHttpOptions(request.model.defaults?.http, request.http)
-      const overlaidBody = yield* bodyWithOverlay(requestBody, http?.body)
+      const overlaidBody = yield* bodyWithOverlay(
+        requestBody,
+        http?.body,
+        protocol === "openai" ? OPENAI_BODY_FIELDS : ZAI_BODY_FIELDS,
+      )
       const text = ProviderShared.encodeJson(overlaidBody)
       const url = applyQuery(`${(input.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, "")}${PATH}`, http?.query)
       const headers = yield* Auth.toEffect(input.auth)({
@@ -198,13 +217,19 @@ export const model = (input: ModelInput) => {
       const payload = yield* response.json.pipe(
         Effect.mapError(() => invalidOutput(adapter, `Failed to read the ${name} Images response`)),
       )
-      const decoded = yield* Schema.decodeUnknownEffect(OpenAIImageResponse)(payload).pipe(
-        Effect.mapError(() => invalidOutput(adapter, `${name} Images returned an invalid response`)),
-      )
+      const decoded = yield* (
+        protocol === "openai"
+          ? Schema.decodeUnknownEffect(OpenAIImageResponse)(payload)
+          : Schema.decodeUnknownEffect(ZAIImageResponse)(payload)
+      ).pipe(Effect.mapError(() => invalidOutput(adapter, `${name} Images returned an invalid response`)))
       const format =
-        protocol === "zai" ? "jpeg" : (decoded.output_format ?? providerOptions(request).outputFormat ?? "png")
+        protocol === "zai"
+          ? "jpeg"
+          : (("output_format" in decoded ? decoded.output_format : undefined) ??
+            providerOptions(request).outputFormat ??
+            "png")
       const images = yield* Effect.forEach(decoded.data, (item, index) => {
-        if (item.b64_json)
+        if ("b64_json" in item && item.b64_json)
           return Effect.fromResult(Encoding.decodeBase64(item.b64_json)).pipe(
             Effect.mapError(() =>
               invalidOutput(adapter, `${name} Images result ${index} contains invalid base64 data`),
@@ -215,7 +240,9 @@ export const model = (input: ModelInput) => {
                   mediaType: `image/${format}`,
                   data,
                   providerMetadata:
-                    item.revised_prompt === undefined ? undefined : { openai: { revisedPrompt: item.revised_prompt } },
+                    "revised_prompt" in item && item.revised_prompt !== undefined
+                      ? { openai: { revisedPrompt: item.revised_prompt } }
+                      : undefined,
                 }),
             ),
           )
@@ -225,7 +252,9 @@ export const model = (input: ModelInput) => {
               mediaType: `image/${format}`,
               data: item.url,
               providerMetadata:
-                item.revised_prompt === undefined ? undefined : { openai: { revisedPrompt: item.revised_prompt } },
+                "revised_prompt" in item && item.revised_prompt !== undefined
+                  ? { openai: { revisedPrompt: item.revised_prompt } }
+                  : undefined,
             }),
           )
         return Effect.fail(invalidOutput(adapter, `${name} Images result ${index} has neither image data nor a URL`))
@@ -234,7 +263,7 @@ export const model = (input: ModelInput) => {
       return new ImageResponse({
         images,
         usage:
-          protocol === "zai" || decoded.usage === undefined
+          protocol === "zai" || !("usage" in decoded) || decoded.usage === undefined
             ? undefined
             : new Usage({
                 inputTokens: decoded.usage.input_tokens,
@@ -247,10 +276,10 @@ export const model = (input: ModelInput) => {
             ? { openai: { outputFormat: format } }
             : {
                 zai: {
-                  created: decoded.created,
-                  id: decoded.id,
-                  requestID: decoded.request_id,
-                  contentFilter: decoded.content_filter,
+                  created: "created" in decoded ? decoded.created : undefined,
+                  id: "id" in decoded ? decoded.id : undefined,
+                  requestID: "request_id" in decoded ? decoded.request_id : undefined,
+                  contentFilter: "content_filter" in decoded ? decoded.content_filter : undefined,
                 },
               },
       })

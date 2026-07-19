@@ -2,9 +2,9 @@ import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { HttpClientRequest } from "effect/unstable/http"
 import { Image, ImageClient } from "../../src"
-import { ZAI } from "../../src/providers"
+import { OpenAI, ZAI } from "../../src/providers"
 import { it } from "../lib/effect"
-import { dynamicResponse } from "../lib/http"
+import { dynamicResponse, fixedResponse } from "../lib/http"
 
 describe("Z.ai Images", () => {
   it.effect("generates through the Z.ai Images API", () =>
@@ -69,5 +69,79 @@ describe("Z.ai Images", () => {
         ),
       ),
     ),
+  )
+
+  it.effect("validates Z.ai-owned request fields without reserving them for OpenAI", () =>
+    Effect.gen(function* () {
+      const invalid = yield* Image.generate({
+        model: ZAI.configure({ apiKey: "test", image: { providerOptions: { userID: "short" } } }).image("model"),
+        prompt: "test",
+      }).pipe(Effect.provide(ImageClient.layer.pipe(Layer.provide(fixedResponse("{}")))), Effect.flip)
+      expect(invalid.reason._tag).toBe("InvalidRequest")
+
+      const openaiQuality = yield* Image.generate({
+        model: OpenAI.configure({ apiKey: "test" }).image("model"),
+        prompt: "test",
+        providerOptions: { openai: { quality: "standard" } },
+      }).pipe(Effect.provide(ImageClient.layer.pipe(Layer.provide(fixedResponse("{}")))), Effect.flip)
+      expect(openaiQuality.reason._tag).toBe("InvalidRequest")
+
+      const zaiOverlay = yield* Image.generate({
+        model: ZAI.configure({ apiKey: "test" }).image("model"),
+        prompt: "test",
+        http: { body: { user_id: "overlay-user" } },
+      }).pipe(Effect.provide(ImageClient.layer.pipe(Layer.provide(fixedResponse("{}")))), Effect.flip)
+      expect(zaiOverlay.reason).toMatchObject({
+        _tag: "InvalidRequest",
+        message: "http.body cannot overlay protocol-owned field(s): user_id",
+      })
+
+      const request = yield* Image.generate({
+        model: OpenAI.configure({ apiKey: "test" }).image("model"),
+        prompt: "test",
+        http: { body: { user_id: "overlay-user" } },
+      }).pipe(
+        Effect.provide(
+          ImageClient.layer.pipe(
+            Layer.provide(
+              dynamicResponse((input) => {
+                expect(JSON.parse(input.text)).toMatchObject({ user_id: "overlay-user" })
+                return Effect.succeed(
+                  input.respond(JSON.stringify({ data: [{ url: "https://example.test/image.jpg" }] }), {
+                    headers: { "content-type": "application/json" },
+                  }),
+                )
+              }),
+            ),
+          ),
+        ),
+      )
+      expect(request.image?.data).toBe("https://example.test/image.jpg")
+    }),
+  )
+
+  it.effect("rejects invalid Z.ai content filter structures", () =>
+    Effect.gen(function* () {
+      const model = ZAI.configure({ apiKey: "test" }).image("model")
+      const payloads = [
+        { data: [{ url: "https://example.test/image.jpg" }], content_filter: [{ role: "system", level: 1 }] },
+        { data: [{ url: "https://example.test/image.jpg" }], content_filter: [{ role: "user", level: 1.5 }] },
+        { data: [{ url: "https://example.test/image.jpg" }], content_filter: [{ role: "history", level: 4 }] },
+      ]
+
+      yield* Effect.forEach(payloads, (payload) =>
+        Image.generate({ model, prompt: "test" }).pipe(
+          Effect.provide(
+            ImageClient.layer.pipe(
+              Layer.provide(
+                fixedResponse(JSON.stringify(payload), { headers: { "content-type": "application/json" } }),
+              ),
+            ),
+          ),
+          Effect.flip,
+          Effect.tap((error) => Effect.sync(() => expect(error.reason._tag).toBe("InvalidProviderOutput"))),
+        ),
+      )
+    }),
   )
 })

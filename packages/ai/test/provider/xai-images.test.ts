@@ -1,8 +1,9 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { HttpClientRequest } from "effect/unstable/http"
+import { Headers, HttpClientRequest } from "effect/unstable/http"
 import { Image, ImageClient } from "../../src"
 import { XAI } from "../../src/providers"
+import { Auth } from "../../src/route"
 import { it } from "../lib/effect"
 import { dynamicResponse } from "../lib/http"
 
@@ -54,6 +55,34 @@ describe("xAI Images", () => {
                   }),
                   { headers: { "content-type": "application/json" } },
                 )
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  )
+
+  it.effect("supports request-level custom auth", () =>
+    Image.generate({
+      model: XAI.configure({
+        baseURL: "https://api.xai.test/v1",
+        auth: Auth.customRequest((input) =>
+          Effect.succeed(Headers.set(input.headers, "x-custom-auth", new URL(input.url).hostname)),
+        ),
+      }).image("grok-imagine-image"),
+      prompt: "A robot tending a rooftop garden",
+    }).pipe(
+      Effect.provide(
+        ImageClient.layer.pipe(
+          Layer.provide(
+            dynamicResponse((input) =>
+              Effect.gen(function* () {
+                const request = yield* HttpClientRequest.toWeb(input.request).pipe(Effect.orDie)
+                expect(request.headers.get("x-custom-auth")).toBe("api.xai.test")
+                return input.respond(JSON.stringify({ data: [{ b64_json: "AQID", mime_type: "image/png" }] }), {
+                  headers: { "content-type": "application/json" },
+                })
               }),
             ),
           ),

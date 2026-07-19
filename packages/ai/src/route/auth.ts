@@ -1,6 +1,6 @@
 import { Config, Effect, Redacted } from "effect"
 import { Headers } from "effect/unstable/http"
-import { AuthenticationReason, InvalidRequestReason, LLMError, LLMRequest, type HttpOptions } from "../schema"
+import { AuthenticationReason, InvalidRequestReason, LLMError, type HttpOptions, type LLMRequest } from "../schema"
 
 export class MissingCredentialError extends Error {
   readonly _tag = "MissingCredentialError"
@@ -14,7 +14,7 @@ export type CredentialError = MissingCredentialError | Config.ConfigError
 export type AuthError = CredentialError | LLMError
 type Secret = string | Redacted.Redacted | Config.Config<string | Redacted.Redacted>
 
-interface RequestInput {
+export interface RequestAuthInput {
   readonly request: { readonly http?: HttpOptions }
   readonly method: "POST" | "GET"
   readonly url: string
@@ -22,7 +22,7 @@ interface RequestInput {
   readonly headers: Headers.Headers
 }
 
-export interface AuthInput extends Omit<RequestInput, "request"> {
+export interface AuthInput extends Omit<RequestAuthInput, "request"> {
   readonly request: LLMRequest
 }
 
@@ -35,7 +35,7 @@ export interface Credential {
 }
 
 export interface Definition {
-  readonly apply: (input: RequestInput) => Effect.Effect<Headers.Headers, AuthError>
+  readonly apply: (input: RequestAuthInput) => Effect.Effect<Headers.Headers, AuthError>
   readonly andThen: (that: Definition) => Definition
   readonly orElse: (that: Definition) => Definition
   readonly pipe: <A>(f: (self: Definition) => A) => A
@@ -104,17 +104,11 @@ export const headers = (input: Headers.Input) =>
 
 export const remove = (name: string) => auth((input) => Effect.succeed(Headers.remove(input.headers, name)))
 
+export const customRequest = (apply: (input: RequestAuthInput) => Effect.Effect<Headers.Headers, LLMError>) =>
+  auth(apply)
+
 export const custom = (apply: (input: AuthInput) => Effect.Effect<Headers.Headers, LLMError>) =>
-  auth((input) => {
-    if (input.request instanceof LLMRequest) return apply({ ...input, request: input.request })
-    return Effect.fail(
-      new LLMError({
-        module: "Auth",
-        method: "custom",
-        reason: new InvalidRequestReason({ message: "Custom LLM auth requires an LLM request" }),
-      }),
-    )
-  })
+  customRequest((input) => apply(input as AuthInput))
 
 export const passthrough = none
 
@@ -164,7 +158,7 @@ const toLLMError = (error: AuthError): LLMError => {
 
 export const toEffect =
   (input: Definition) =>
-  (authInput: RequestInput): Effect.Effect<Headers.Headers, LLMError> =>
+  (authInput: RequestAuthInput): Effect.Effect<Headers.Headers, LLMError> =>
     input.apply(authInput).pipe(Effect.mapError(toLLMError))
 
 export * as Auth from "./auth"
